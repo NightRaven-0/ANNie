@@ -1,4 +1,3 @@
-// train_ann.cpp
 // Purpose:
 //  - Load ANNie/data/dataset.csv with columns: front,left,right,action
 //  - Train a small MLP (3 -> 16 -> 8 -> 4) using tiny-dnn
@@ -10,9 +9,10 @@
 //  - action values: 0=FORWARD,1=LEFT,2=RIGHT,3=STOP
 //  - Normalization: distances clipped to [0,100] cm then scaled to [0..1]
 //  - tiny-dnn: Put tiny-dnn in vendor/tiny-dnn, include with -Ivendor/tiny-dnn
-//
-// Build example:
-//  g++ -std=c++17 -O2 training/train_ann.cpp -Ivendor/tiny-dnn -o training/train_ann.exe
+// compile with 
+// cl /EHsc /std:c++17 training\train_ann.cpp /I vendor\tiny-dnn /Fe:training\train_ann.exe
+// run with 
+// training\train_ann.exe
 
 #include <iostream>
 #include <fstream>
@@ -117,50 +117,38 @@ void export_weights_header(network<sequential> &net, const string &out_path) {
     fh << "// Auto-generated weights header from train_ann.cpp\n";
     fh << "#ifndef ANN_WEIGHTS_H\n#define ANN_WEIGHTS_H\n\n";
 
-    // We'll iterate layers by index (safer across versions)
     const size_t nLayers = net.depth();
     int layer_index = 0;
+
     for (size_t li = 0; li < nLayers; ++li) {
         auto layer_ptr = net[li];
 
-        // Attempt to get params (weights/biases). tiny-dnn typically exposes weights() -> vector<tensor_t>
-        // But to be robust, check if weights() exists via compile-time; we assume it does in the version used.
-        std::vector<tiny_dnn::tensor_t> params;
-        // Use a const reference to whatever weights() returns
-        const auto &params = layer_ptr->weights();
-        if (params.empty()) { ++layer_index; continue; }
+        // In this fork, weights() returns a single tensor_t (vector<vec_t>)
+        const tensor_t &tensor = layer_ptr->weights();
+        if (tensor.empty()) { ++layer_index; continue; }
 
-        // If layer has no parameters, skip
-        if (params.empty()) { ++layer_index; continue; }
-
-        for (size_t pidx = 0; pidx < params.size(); ++pidx) {
-            const auto &tensor = params[pidx];
-            // compute total elements
-            size_t total = 0;
-            for (size_t ti = 0; ti < tensor.size(); ++ti) {
-                total += tensor[ti].size();
-            }
-
-            std::ostringstream varname;
-            varname << "L" << layer_index << "_P" << pidx;
-
-            fh << "// Layer " << layer_index << " param " << pidx << " shape flattened, total=" << total << "\n";
-            fh << "const float " << varname.str() << "[] = { \n";
-
-            // Flatten with index-based loops
-            for (size_t ti = 0; ti < tensor.size(); ++ti) {
-                const auto &vec = tensor[ti];
-                for (size_t k = 0; k < vec.size(); ++k) {
-                    fh << std::fixed << std::setprecision(8) << vec[k] << "f";
-                    // add comma except after last element
-                    bool last_elem = (ti == tensor.size() - 1) && (k == vec.size() - 1);
-                    if (!last_elem) fh << ", ";
-                }
-            }
-
-            fh << "\n};\n\n";
+        // compute total elements
+        size_t total = 0;
+        for (size_t ti = 0; ti < tensor.size(); ++ti) {
+            total += tensor[ti].size();
         }
 
+        std::ostringstream varname;
+        varname << "L" << layer_index << "_P0";
+
+        fh << "// Layer " << layer_index << " weights flattened, total=" << total << "\n";
+        fh << "const float " << varname.str() << "[] = { \n";
+
+        for (size_t ti = 0; ti < tensor.size(); ++ti) {
+            const vec_t &vec = tensor[ti];
+            for (size_t k = 0; k < vec.size(); ++k) {
+                fh << std::fixed << std::setprecision(8) << vec[k] << "f";
+                bool last_elem = (ti == tensor.size() - 1) && (k == vec.size() - 1);
+                if (!last_elem) fh << ", ";
+            }
+        }
+
+        fh << "\n};\n\n";
         ++layer_index;
     }
 
