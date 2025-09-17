@@ -1,5 +1,4 @@
-// path to tiny-dnn P:\AML\tiny-dnn
-
+// train_ann.cpp
 // Purpose:
 //  - Load ANNie/data/dataset.csv with columns: front,left,right,action
 //  - Train a small MLP (3 -> 16 -> 8 -> 4) using tiny-dnn
@@ -10,7 +9,10 @@
 //  - The CSV must have a header line: front,left,right,action
 //  - action values: 0=FORWARD,1=LEFT,2=RIGHT,3=STOP
 //  - Normalization: distances clipped to [0,100] cm then scaled to [0..1]
-//  - tiny-dnn: https://github.com/tiny-dnn/tiny-dnn  (header-only)
+//  - tiny-dnn: Put tiny-dnn in vendor/tiny-dnn, include with -Ivendor/tiny-dnn
+//
+// Build example:
+//  g++ -std=c++17 -O2 training/train_ann.cpp -Ivendor/tiny-dnn -o training/train_ann.exe
 
 #include <iostream>
 #include <fstream>
@@ -20,11 +22,21 @@
 #include <random>
 #include <algorithm>
 #include <iomanip>
-#include <filesystem>
+#include <array>
+#include <stdexcept>
 
-#include "tiny_dnn/tiny_dnn.h" // adjust include path to your tiny-dnn include
+#if __has_include(<filesystem>)
+  #include <filesystem>
+  namespace fs = std::filesystem;
+#else
+  // If your compiler doesn't have <filesystem>, you can fallback to C-style path handling.
+  // But most modern compilers with -std=c++17 have filesystem.
+  #error "C++17 filesystem required"
+#endif
 
-namespace fs = std::filesystem;
+// tiny-dnn include (adjust include path on compile with -I)
+#include "tiny_dnn/tiny_dnn.h"
+
 using namespace tiny_dnn;
 using namespace tiny_dnn::activation;
 using std::string;
@@ -36,7 +48,6 @@ struct Sample {
 };
 
 static const float INPUT_RANGE_CM = 100.0f;
-static const std::string ROOT = ".."; // run from ANNie/training/ ; adjust if running elsewhere
 
 // Utility: read CSV dataset
 vector<Sample> load_dataset(const string &csv_path) {
@@ -47,7 +58,7 @@ vector<Sample> load_dataset(const string &csv_path) {
     vector<Sample> out;
     string line;
     // read header
-    if (!std::getline(in, line)) throw std::runtime_error("Empty CSV");
+    if (!std::getline(in, line)) throw std::runtime_error("Empty CSV or missing header");
     while (std::getline(in, line)) {
         if (line.size() < 3) continue;
         std::stringstream ss(line);
@@ -77,6 +88,7 @@ void shuffle_split(const vector<Sample> &all, vector<Sample> &train, vector<Samp
     std::mt19937 rng(seed);
     std::shuffle(copy.begin(), copy.end(), rng);
     size_t ntest = static_cast<size_t>(copy.size() * test_ratio);
+    if (ntest > copy.size()) ntest = copy.size();
     test.assign(copy.begin(), copy.begin() + ntest);
     train.assign(copy.begin() + ntest, copy.end());
 }
@@ -84,19 +96,20 @@ void shuffle_split(const vector<Sample> &all, vector<Sample> &train, vector<Samp
 // Convert to tiny-dnn tensors
 void to_tiny(const vector<Sample> &data, std::vector<vec_t> &X, std::vector<label_t> &Y) {
     X.clear(); Y.clear();
-    for (const auto &s : data) {
+    X.reserve(data.size());
+    Y.reserve(data.size());
+    for (size_t i = 0; i < data.size(); ++i) {
         vec_t v;
-        v.push_back(s.x[0]);
-        v.push_back(s.x[1]);
-        v.push_back(s.x[2]);
+        v.push_back(data[i].x[0]);
+        v.push_back(data[i].x[1]);
+        v.push_back(data[i].x[2]);
         X.push_back(v);
-        Y.push_back(static_cast<label_t>(s.y));
+        Y.push_back(static_cast<label_t>(data[i].y));
     }
 }
 
 // Export weights & biases to a C header usable by Arduino
-// We'll extract params from each layer (dense layers) and write flat arrays.
-// Note: tiny-dnn stores weights in layer->weight_ptr() etc.
+// We use index-based access to avoid range-for issues on different tiny-dnn forks.
 void export_weights_header(network<sequential> &net, const string &out_path) {
     std::ofstream fh(out_path);
     if (!fh.is_open()) throw std::runtime_error("Cannot open weights header for writing");
@@ -104,32 +117,50 @@ void export_weights_header(network<sequential> &net, const string &out_path) {
     fh << "// Auto-generated weights header from train_ann.cpp\n";
     fh << "#ifndef ANN_WEIGHTS_H\n#define ANN_WEIGHTS_H\n\n";
 
+    // We'll iterate layers by index (safer across versions)
+    const size_t nLayers = net.depth();
     int layer_index = 0;
-    for (auto &layer_ptr : net) {
-        // We only export fully-connected (fc) layers with parameters
-        auto params = layer_ptr->weights();
+    for (size_t li = 0; li < nLayers; ++li) {
+        auto layer_ptr = net[li];
+
+        // Attempt to get params (weights/biases). tiny-dnn typically exposes weights() -> vector<tensor_t>
+        // But to be robust, check if weights() exists via compile-time; we assume it does in the version used.
+        std::vector<tiny_dnn::tensor_t> params;
+        // Use a const reference to whatever weights() returns
+        const auto &params = layer_ptr->weights();
         if (params.empty()) { ++layer_index; continue; }
-        // tiny-dnn weights() returns vector<tensor_t> where first is W, second is b typically
-        // We'll flatten each param tensor
+
+        // If layer has no parameters, skip
+        if (params.empty()) { ++layer_index; continue; }
+
         for (size_t pidx = 0; pidx < params.size(); ++pidx) {
-            // params[pidx] is tensor_t -> vector<vec_t> where each vec_t is a column/row chunk
-            // We'll flatten by concatenating all floats.
+            const auto &tensor = params[pidx];
+            // compute total elements
+            size_t total = 0;
+            for (size_t ti = 0; ti < tensor.size(); ++ti) {
+                total += tensor[ti].size();
+            }
+
             std::ostringstream varname;
             varname << "L" << layer_index << "_P" << pidx;
-            // Determine total length
-            size_t total = 0;
-            for (auto &tt : params[pidx]) total += tt.size();
 
             fh << "// Layer " << layer_index << " param " << pidx << " shape flattened, total=" << total << "\n";
             fh << "const float " << varname.str() << "[] = { \n";
-            bool first = true;
-            for (const auto &tt : params[pidx]) {
-                for (float v : tt) {
-                    fh << std::fixed << std::setprecision(8) << v << "f, ";
+
+            // Flatten with index-based loops
+            for (size_t ti = 0; ti < tensor.size(); ++ti) {
+                const auto &vec = tensor[ti];
+                for (size_t k = 0; k < vec.size(); ++k) {
+                    fh << std::fixed << std::setprecision(8) << vec[k] << "f";
+                    // add comma except after last element
+                    bool last_elem = (ti == tensor.size() - 1) && (k == vec.size() - 1);
+                    if (!last_elem) fh << ", ";
                 }
             }
+
             fh << "\n};\n\n";
         }
+
         ++layer_index;
     }
 
@@ -140,8 +171,8 @@ void export_weights_header(network<sequential> &net, const string &out_path) {
 
 int main(int argc, char** argv) {
     try {
-        // Paths
-        fs::path repoRoot = fs::path(_FILE_).parent_path().parent_path(); // go up from training/
+        // Build paths relative to this file's folder (training/)
+        fs::path repoRoot = fs::path(__FILE__).parent_path().parent_path(); // up from training/
         fs::path dataPath = repoRoot / "data" / "dataset.csv";
         fs::path modelsDir = repoRoot / "models";
         fs::create_directories(modelsDir);
@@ -165,41 +196,35 @@ int main(int argc, char** argv) {
         to_tiny(train_samples, X_train, y_train);
         to_tiny(test_samples, X_test, y_test);
 
-        // Build network: 3 -> 16 (relu) -> 8 (relu) -> 4 (softmax via cross-entropy)
+        // Build network: 3 -> 16 (relu) -> 8 (relu) -> 4 (logits)
         network<sequential> net;
         net << fully_connected_layer(3, 16) << relu()
             << fully_connected_layer(16, 8) << relu()
-            << fully_connected_layer(8, 4); // logits, loss function will apply softmax
+            << fully_connected_layer(8, 4);
 
         // Optimizer
-        adagrad optimizer; // simple optimizer; alternatives: adam, momentum
+        adagrad optimizer;
         optimizer.alpha = float_t(0.01);
 
         // Train parameters
         const int epochs = 80;
         const int batch_size = 32;
 
-        progress_display disp(X_train.size());
-        timer t;
-
         std::cout << "Starting training...\n";
-        // tiny-dnn train() accepts vectors; cross_entropy_multiclass is the loss
-        net.train<cross_entropy_multiclass>(optimizer, X_train, y_train, batch_size, epochs,
-            [&](){ /* epoch begin */ },
-            [&](){ /* epoch end */ }
-        );
+        // train: tiny-dnn will handle shuffling if requested; we use train() convenience
+        net.train<cross_entropy_multiclass>(optimizer, X_train, y_train, batch_size, epochs);
 
         std::cout << "Training complete.\n";
 
         // Evaluate accuracy on test set
         int correct = 0;
         for (size_t i = 0; i < X_test.size(); ++i) {
-            auto res = net.predict(X_test[i]);
-            // res is vec_t of length 4 logits; find argmax
-            int pred = std::distance(res.begin(), std::max_element(res.begin(), res.end()));
+            vec_t res = net.predict(X_test[i]);
+            int pred = static_cast<int>(std::distance(res.begin(), std::max_element(res.begin(), res.end())));
             if (pred == y_test[i]) ++correct;
         }
-        float acc = float(correct) / float(X_test.size());
+
+        float acc = (X_test.empty() ? 0.0f : float(correct) / float(X_test.size()));
         std::cout << "Test accuracy: " << acc << " (" << correct << "/" << X_test.size() << ")\n";
 
         // Save the tiny-dnn model (binary)
@@ -213,8 +238,7 @@ int main(int argc, char** argv) {
 
         std::cout << "All done. Outputs in models/ (arduino_weights.h and model binary)\n";
         return 0;
-    } catch (const std::exception &ex) 
-    {
+    } catch (const std::exception &ex) {
         std::cerr << "Exception: " << ex.what() << std::endl;
         return 1;
     }
