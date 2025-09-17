@@ -1,0 +1,5 @@
+/vendor/
+/models/*
+!models/arduino_weights.h
+/data/
+!data/sample_dataset_csv
