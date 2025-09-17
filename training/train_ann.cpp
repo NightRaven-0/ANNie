@@ -213,8 +213,9 @@ int main(int argc, char** argv) {
 
         std::cout << "All done. Outputs in models/ (arduino_weights.h and model binary)\n";
         return 0;
-    } catch (const std::exception &ex) {
+    } catch (const std::exception &ex) 
+    {
         std::cerr << "Exception: " << ex.what() << std::endl;
-        return 1;
-    }
+        return 1;
+    }
 }
