@@ -110,46 +110,39 @@ void to_tiny(const vector<Sample> &data, std::vector<vec_t> &X, std::vector<labe
 
 // Export weights & biases to a C header usable by Arduino
 // We use index-based access to avoid range-for issues on different tiny-dnn forks.
-void export_weights_header(network<sequential> &net, const string &out_path) {
+void export_weights_header(network<sequential> &net, const std::string &out_path) {
     std::ofstream fh(out_path);
     if (!fh.is_open()) throw std::runtime_error("Cannot open weights header for writing");
 
     fh << "// Auto-generated weights header from train_ann.cpp\n";
     fh << "#ifndef ANN_WEIGHTS_H\n#define ANN_WEIGHTS_H\n\n";
 
-    const size_t nLayers = net.depth();
-    int layer_index = 0;
-
-    for (size_t li = 0; li < nLayers; ++li) {
+    for (size_t li = 0; li < net.depth(); ++li) {
         auto layer_ptr = net[li];
 
-        // In this fork, weights() returns a single tensor_t (vector<vec_t>)
-        const tensor_t &tensor = layer_ptr->weights();
-        if (tensor.empty()) { ++layer_index; continue; }
+        // In your fork: weights() returns vector<vec_t*>
+        auto params = layer_ptr->weights();
+        if (params.empty()) continue;
 
-        // compute total elements
-        size_t total = 0;
-        for (size_t ti = 0; ti < tensor.size(); ++ti) {
-            total += tensor[ti].size();
-        }
+        for (size_t pidx = 0; pidx < params.size(); ++pidx) {
+            vec_t* vec_ptr = params[pidx];
+            if (!vec_ptr) continue;
+            const vec_t &vec = *vec_ptr;
 
-        std::ostringstream varname;
-        varname << "L" << layer_index << "_P0";
+            std::ostringstream varname;
+            varname << "L" << li << "_P" << pidx;
 
-        fh << "// Layer " << layer_index << " weights flattened, total=" << total << "\n";
-        fh << "const float " << varname.str() << "[] = { \n";
+            fh << "// Layer " << li << " param " << pidx
+               << " length=" << vec.size() << "\n";
+            fh << "const float " << varname.str() << "[] = { \n";
 
-        for (size_t ti = 0; ti < tensor.size(); ++ti) {
-            const vec_t &vec = tensor[ti];
             for (size_t k = 0; k < vec.size(); ++k) {
                 fh << std::fixed << std::setprecision(8) << vec[k] << "f";
-                bool last_elem = (ti == tensor.size() - 1) && (k == vec.size() - 1);
-                if (!last_elem) fh << ", ";
+                if (k + 1 < vec.size()) fh << ", ";
             }
-        }
 
-        fh << "\n};\n\n";
-        ++layer_index;
+            fh << "\n};\n\n";
+        }
     }
 
     fh << "#endif // ANN_WEIGHTS_H\n";
