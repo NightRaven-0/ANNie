@@ -1,0 +1,30 @@
+START → (continuous main loop)
+
+Read front distance (average recent readings)
+If front ≤ CRITICAL_DISTANCE then perform Emergency Stop (cut motors, blink LED, log) and end this loop iteration (wait/retry). Otherwise continue.
+
+If front > SAFE_DISTANCE then move forward and immediately loop back to fast re-check (fast polling). Otherwise begin the full decision cycle:
+
+Stop briefly (motorsStop).
+
+Backup a short distance (short reverse), then stop again.
+
+Perform servo scan: rotate sensor to LEFT, wait settle, read leftDist (average).
+
+Rotate to RIGHT, wait settle, read rightDist (average).
+
+Rotate servo to CENTER, wait settle, read frontDist fresh (average).
+
+Normalize the five inputs (front, left, right, diff, minLR) and feed to the MLP; compute choice = argmax(logits).
+
+Safety check: if choice == FORWARD but frontDist <= SAFE_DISTANCE, refuse forward (flag failure) and do not execute; else proceed.
+
+Execute the chosen action for a short, fixed duration (move forward briefly / small turn left / small turn right).
+
+Re-read frontDist; if frontDist > SAFE_DISTANCE then mark success and resume forward behavior. If still blocked, increment retryCount.
+
+If retryCount >= MAX_RETRIES, perform escalation (180° rotation + long reverse), reset retryCount (or enter stalled mode if still blocked).
+
+After action (success/fail path) loop back to START.
+
+(End loop)

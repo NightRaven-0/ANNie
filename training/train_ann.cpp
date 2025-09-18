@@ -1,6 +1,6 @@
 // Purpose:
 //  - Load ANNie/data/dataset.csv with columns: front,left,right,action
-//  - Train a small MLP (7 -> 16 -> 8 -> 4) using tiny-dnn
+//  - Train a small MLP (5 -> 16 -> 8 -> 4) using tiny-dnn
 //  - Save model weights as ANNie/models/arduino_weights.h (C arrays of floats)
 //  - Save a tiny-dnn binary model file ANNie/models/ann_model_tinydnn.bin (optional)
 // Notes:
@@ -40,7 +40,7 @@ using std::string;
 using std::vector;
 
 struct Sample {
-    std::array<float,7> x;
+    std::array<float,5> x;
     int y; // 0..3
 };
 
@@ -64,24 +64,21 @@ vector<Sample> load_dataset(const string &csv_path) {
         if (cols.size() < 6) continue; // need 5 features + label
 
         float f = std::stof(cols[0]);  // front
-        float ff = std::stof(cols[1]); // far_front
         float l = std::stof(cols[2]);  // left
         float r = std::stof(cols[3]);  // right
         float d = std::stof(cols[4]);  // diff
         float m = std::stof(cols[5]);  // minLR
-        float c = std::stof(cols[6]);  // collision
         int a   = std::stoi(cols[7]);
 
         Sample s;
         s.x = {
             std::clamp(f, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
-            std::clamp(ff, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
             std::clamp(l, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
             std::clamp(r, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
             std::clamp(d, -INPUT_RANGE_CM, INPUT_RANGE_CM) / INPUT_RANGE_CM,
             std::clamp(m, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
-            c // already 0 or 1
         };
+        s.x = {f, l, r, d, m};
         s.y = a;
         out.push_back(s);
     }
@@ -102,19 +99,9 @@ void shuffle_split(const vector<Sample> &all, vector<Sample> &train, vector<Samp
 void to_tiny(const vector<Sample> &data, std::vector<vec_t> &X, std::vector<label_t> &Y) {
     X.clear(); 
     Y.clear();
-    X.reserve(data.size());
-    Y.reserve(data.size());
-
     for (const auto &s : data) {
         vec_t v;
-        // push all 7 features
-        v.push_back(s.x[0]);
-        v.push_back(s.x[1]);
-        v.push_back(s.x[2]);
-        v.push_back(s.x[3]);
-        v.push_back(s.x[4]);
-        v.push_back(s.x[5]);
-        v.push_back(s.x[6]);
+        for(auto f : s.x) v.push_back(f);
         X.push_back(v);
         Y.push_back(static_cast<label_t>(s.y));
     }
@@ -165,7 +152,7 @@ int main(int argc, char** argv) {
     try {
         // repo root is two levels up from training/
         fs::path repoRoot = fs::path(__FILE__).parent_path().parent_path();
-        fs::path dataPath = repoRoot / "data" / "dataset_converted.csv";
+        fs::path dataPath = repoRoot / "data" / "dataset.csv";
         fs::path modelsDir = repoRoot / "models";
         fs::create_directories(modelsDir);
 
@@ -174,9 +161,8 @@ int main(int argc, char** argv) {
         if (all.empty()) { std::cerr << "Dataset empty or not found\n"; return 1; }
         std::cout << "Loaded " << all.size() << " samples\n";
 
-        vector<Sample> train_samples, test_samples;
-        shuffle_split(all, train_samples, test_samples, 0.2f, 42);
-        std::cout << "Train: " << train_samples.size() << " Test: " << test_samples.size() << std::endl;
+        std::vector<Sample> train_samples, test_samples;
+        shuffle_split(all, train_samples, test_samples);
 
         std::vector<vec_t> X_train, X_test;
         std::vector<label_t> y_train, y_test;

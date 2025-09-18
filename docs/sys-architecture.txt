@@ -1,0 +1,15 @@
+[ front_dist_cm ]    \
+                      \
+[ left_dist_cm  ] ---> [ Normalizer ] ---> [ Input Vector (5 floats) ]
+                      /                      (front, left, right, diff, minLR)
+[ right_dist_cm ]  /                           |
+                                              v
+                                       [Hidden Layer 1] (8 neurons, ReLU)
+                                           (W1: 8×5, B1: 8)
+                                               |
+                                               v
+                                        [Output Layer] (4 logits)
+                                           (W2: 4×8, B2: 4)
+                                               |
+                                               v
+                                  argmax -> {FORWARD, LEFT, RIGHT, STOP}

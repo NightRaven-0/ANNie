@@ -1,0 +1,52 @@
+When a sensor read returns a timeout sentinel (e.g. 999) or pulseIn returns 0:
+
+Treat that reading as “very far” for ANN input normalization (scale to max). Mark the sample as unreliable in a local flag.
+
+If the unreliable reading is not used for a safety-critical check (e.g., side distances used by ANN), continue but annotate the decision as “low confidence.”
+
+If the unreliable reading is the front reading and you must decide: attempt re-measure up to N_RETRIES_SENSOR times (short delay between tries).
+
+If a valid reading appears, use it.
+
+If still unreliable after retries, execute conservative failsafe: stop, blink LED, and wait for manual reset OR attempt a conservative fallback (e.g., back + rotate slowly while monitoring other sensors).
+
+Log the event on serial for debugging (timestamp + sensor id + unreliable flag).
+
+
+If front <= CRITICAL_DISTANCE at any time:
+
+Immediately motorsStop() (cut motor PWM).
+
+Set an emergency flag.
+
+Blink BACK_LED rapidly and log the event to serial.
+
+Remain in safe stop state until front > CRITICAL_DISTANCE for a fixed confirmation window (e.g., two consecutive reads) or manual reset is received.
+
+While in emergency state, ignore ANN outputs except a manual reset/clear.
+
+
+If the robot fails to escape after MAX_RETRIES (incremented each failed attempt to resolve blockage):
+
+Perform escalation routine:
+
+Rotate ~180° (long, deliberate turn).
+
+Reverse for a longer distance.
+
+Re-scan environment with servo; attempt ANN decision again.
+
+If still blocked after escalation, enter stalled mode: stop, LED heartbeat, send serial alert, and require human intervention.
+
+Optionally store a short log (timestamps, last sensor values, retry count) into EEPROM / SD (if available) for post-mortem.
+
+
+If ANN suggests an action that fails the pre-checks (e.g., FORWARD while front <= SAFE_DISTANCE), intercept it:
+
+Refuse the unsafe action and record it as a failed ANN suggestion.
+
+Try the next-highest ANN candidate (second largest logit) if it passes safety checks.
+
+If no ANN candidate passes safety checks, perform deterministic fallback (turn in the direction of larger side clearance, or back + turn).
+
+Increment retry, and escalate if retries exceed threshold.
