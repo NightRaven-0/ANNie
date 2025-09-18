@@ -1,60 +1,72 @@
-// ./training/gen_data
-//compile with :
+// generate_synthetic.cpp
+// Generates dataset with engineered features: diff and minLR
+//
+// Build (MSVC):
 // cl /EHsc /std:c++17 training\generate_synthetic.cpp /Fe:training\gen_data.exe
-//run with:
+// Run:
 // training\gen_data.exe
 
 #include <iostream>
 #include <fstream>
 #include <random>
-#include <string>
+#include <vector>
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
-using namespace std;
 
 int main() {
     std::filesystem::create_directories("data");
-    ofstream fout("data/dataset.csv");
-    fout << "front,left,right,action\n";
-
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> far(40.0f, 120.0f);
-    std::uniform_real_distribution<float> mid(15.0f, 60.0f);
-    std::uniform_real_distribution<float> near(0.0f, 25.0f);
-    std::bernoulli_distribution coin(0.5);
-
-    // Generate scenarios
-    for (int i = 0; i < 200; ++i) {
-        // mostly clear forward
-        float f = far(rng);
-        float l = mid(rng);
-        float r = mid(rng);
-        int action = 0; // FORWARD
-        // add some random closer obstacles
-        if (coin(rng)) { f = mid(rng); }
-        if (coin(rng)) { l = near(rng); }
-        if (coin(rng)) { r = near(rng); }
-        // label heuristics: if front far -> forward, else turn to side with more space, else stop
-        if (f > 35.0f) action = 0;
-        else if (l > r && l > 20.0f) action = 1; // LEFT
-        else if (r > l && r > 20.0f) action = 2; // RIGHT
-        else action = 3; // STOP
-        fout << int(f+0.5f) << "," << int(l+0.5f) << "," << int(r+0.5f) << "," << action << "\n";
+    std::ofstream fout("data/dataset.csv");
+    if (!fout.is_open()) {
+        std::cerr << "Failed to open data/dataset.csv for writing\n";
+        return 1;
     }
 
-    // generate close-obstacle heavy samples
-    for (int i = 0; i < 200; ++i) {
-        float f = near(rng);
-        float l = near(rng);
-        float r = near(rng);
-        int action;
-        if (l > r && l > 15.0f) action = 1;
-        else if (r > l && r > 15.0f) action = 2;
-        else if (f > 20.0f) action = 0;
-        else action = 3;
-        fout << int(f+0.5f) << "," << int(l+0.5f) << "," << int(r+0.5f) << "," << action << "\n";
+    fout << "front,left,right,diff,minLR,action\n";
+
+    const int TARGET_PER_CLASS = 3000; // ~3000 per class
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(0.0f, 100.0f);
+
+    int count[4] = {0,0,0,0};
+    int max_total = TARGET_PER_CLASS * 4;
+
+    while (count[0] < TARGET_PER_CLASS || count[1] < TARGET_PER_CLASS ||
+           count[2] < TARGET_PER_CLASS || count[3] < TARGET_PER_CLASS) {
+
+        float f = dist(rng);
+        float l = dist(rng);
+        float r = dist(rng);
+        int label = -1;
+
+        // Strict but learnable rules
+        if (f > 70 && l > 30 && r > 30) {
+            label = 0; // FORWARD
+        } else if (f < 40 && l > 50 && r < 30) {
+            label = 1; // LEFT
+        } else if (f < 40 && r > 50 && l < 30) {
+            label = 2; // RIGHT
+        } else if (f < 20 && l < 20 && r < 20) {
+            label = 3; // STOP
+        }
+
+        if (label != -1 && count[label] < TARGET_PER_CLASS) {
+            float diff = l - r;
+            float minLR = std::min(l, r);
+            fout << int(f) << "," << int(l) << "," << int(r) << ","
+                 << int(diff) << "," << int(minLR) << "," << label << "\n";
+            count[label]++;
+        }
+
+        int total = count[0] + count[1] + count[2] + count[3];
+        if (total >= max_total) break;
     }
 
     fout.close();
-    cout << "Wrote data/dataset.csv with 400 rows (approx)\n";
+    std::cout << "Wrote data/dataset.csv\n";
+    std::cout << "Counts: FORWARD=" << count[0]
+              << " LEFT=" << count[1]
+              << " RIGHT=" << count[2]
+              << " STOP=" << count[3] << "\n";
     return 0;
 }
