@@ -40,7 +40,7 @@ using std::string;
 using std::vector;
 
 struct Sample {
-    std::array<float,3> x;
+    std::array<float,5> x;
     int y; // 0..3
 };
 
@@ -52,24 +52,33 @@ vector<Sample> load_dataset(const string &csv_path) {
     if (!in.is_open()) throw std::runtime_error("Failed to open dataset: " + csv_path);
     vector<Sample> out;
     string line;
-    // header
     if (!std::getline(in, line)) throw std::runtime_error("Empty CSV or missing header");
+
     while (std::getline(in, line)) {
         if (line.size() < 3) continue;
         std::stringstream ss(line);
         string tok;
         vector<string> cols;
         while (std::getline(ss, tok, ',')) cols.push_back(tok);
-        if (cols.size() < 4) continue;
+
+        if (cols.size() < 6) continue; // need 5 features + label
+
         float f = std::stof(cols[0]);
         float l = std::stof(cols[1]);
         float r = std::stof(cols[2]);
-        int a = std::stoi(cols[3]);
-        f = std::clamp(f, 0.0f, INPUT_RANGE_CM);
-        l = std::clamp(l, 0.0f, INPUT_RANGE_CM);
-        r = std::clamp(r, 0.0f, INPUT_RANGE_CM);
+        float d = std::stof(cols[3]);
+        float m = std::stof(cols[4]);
+        int a   = std::stoi(cols[5]);
+
+        // Normalize
+        f = std::clamp(f, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
+        l = std::clamp(l, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
+        r = std::clamp(r, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
+        d = std::clamp(d, -INPUT_RANGE_CM, INPUT_RANGE_CM) / INPUT_RANGE_CM; // -1..1
+        m = std::clamp(m, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
+
         Sample s;
-        s.x = { f / INPUT_RANGE_CM, l / INPUT_RANGE_CM, r / INPUT_RANGE_CM };
+        s.x = {f, l, r, d, m};
         s.y = a;
         out.push_back(s);
     }
@@ -88,15 +97,21 @@ void shuffle_split(const vector<Sample> &all, vector<Sample> &train, vector<Samp
 }
 
 void to_tiny(const vector<Sample> &data, std::vector<vec_t> &X, std::vector<label_t> &Y) {
-    X.clear(); Y.clear();
-    X.reserve(data.size()); Y.reserve(data.size());
-    for (size_t i = 0; i < data.size(); ++i) {
+    X.clear(); 
+    Y.clear();
+    X.reserve(data.size());
+    Y.reserve(data.size());
+
+    for (const auto &s : data) {
         vec_t v;
-        v.push_back(data[i].x[0]);
-        v.push_back(data[i].x[1]);
-        v.push_back(data[i].x[2]);
+        // push all 5 features
+        v.push_back(s.x[0]);
+        v.push_back(s.x[1]);
+        v.push_back(s.x[2]);
+        v.push_back(s.x[3]);
+        v.push_back(s.x[4]);
         X.push_back(v);
-        Y.push_back(static_cast<label_t>(data[i].y));
+        Y.push_back(static_cast<label_t>(s.y));
     }
 }
 
@@ -145,7 +160,7 @@ int main(int argc, char** argv) {
     try {
         // repo root is two levels up from training/
         fs::path repoRoot = fs::path(__FILE__).parent_path().parent_path();
-        fs::path dataPath = repoRoot / "data" / "dataset.csv";
+        fs::path dataPath = repoRoot / "data" / "dataset_converted.csv";
         fs::path modelsDir = repoRoot / "models";
         fs::create_directories(modelsDir);
 
@@ -163,9 +178,9 @@ int main(int argc, char** argv) {
         to_tiny(train_samples, X_train, y_train);
         to_tiny(test_samples, X_test, y_test);
 
-        // Network: 3 -> 32 -> 16 -> 4
+        // Network: 5 -> 32 -> 16 -> 4
         network<sequential> net;
-        net << fully_connected_layer(3, 32) << relu()
+        net << fully_connected_layer(5, 32) << relu()
             << fully_connected_layer(32, 16) << relu()
             << fully_connected_layer(16, 4);
 
