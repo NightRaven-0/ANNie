@@ -1,6 +1,6 @@
 // Purpose:
 //  - Load ANNie/data/dataset.csv with columns: front,left,right,action
-//  - Train a small MLP (3 -> 16 -> 8 -> 4) using tiny-dnn
+//  - Train a small MLP (7 -> 16 -> 8 -> 4) using tiny-dnn
 //  - Save model weights as ANNie/models/arduino_weights.h (C arrays of floats)
 //  - Save a tiny-dnn binary model file ANNie/models/ann_model_tinydnn.bin (optional)
 // Notes:
@@ -40,7 +40,7 @@ using std::string;
 using std::vector;
 
 struct Sample {
-    std::array<float,5> x;
+    std::array<float,7> x;
     int y; // 0..3
 };
 
@@ -63,22 +63,25 @@ vector<Sample> load_dataset(const string &csv_path) {
 
         if (cols.size() < 6) continue; // need 5 features + label
 
-        float f = std::stof(cols[0]);
-        float l = std::stof(cols[1]);
-        float r = std::stof(cols[2]);
-        float d = std::stof(cols[3]);
-        float m = std::stof(cols[4]);
-        int a   = std::stoi(cols[5]);
-
-        // Normalize
-        f = std::clamp(f, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
-        l = std::clamp(l, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
-        r = std::clamp(r, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
-        d = std::clamp(d, -INPUT_RANGE_CM, INPUT_RANGE_CM) / INPUT_RANGE_CM; // -1..1
-        m = std::clamp(m, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;
+        float f = std::stof(cols[0]);  // front
+        float ff = std::stof(cols[1]); // far_front
+        float l = std::stof(cols[2]);  // left
+        float r = std::stof(cols[3]);  // right
+        float d = std::stof(cols[4]);  // diff
+        float m = std::stof(cols[5]);  // minLR
+        float c = std::stof(cols[6]);  // collision
+        int a   = std::stoi(cols[7]);
 
         Sample s;
-        s.x = {f, l, r, d, m};
+        s.x = {
+            std::clamp(f, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
+            std::clamp(ff, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
+            std::clamp(l, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
+            std::clamp(r, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
+            std::clamp(d, -INPUT_RANGE_CM, INPUT_RANGE_CM) / INPUT_RANGE_CM,
+            std::clamp(m, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
+            c // already 0 or 1
+        };
         s.y = a;
         out.push_back(s);
     }
@@ -104,12 +107,14 @@ void to_tiny(const vector<Sample> &data, std::vector<vec_t> &X, std::vector<labe
 
     for (const auto &s : data) {
         vec_t v;
-        // push all 5 features
+        // push all 7 features
         v.push_back(s.x[0]);
         v.push_back(s.x[1]);
         v.push_back(s.x[2]);
         v.push_back(s.x[3]);
         v.push_back(s.x[4]);
+        v.push_back(s.x[5]);
+        v.push_back(s.x[6]);
         X.push_back(v);
         Y.push_back(static_cast<label_t>(s.y));
     }
@@ -180,7 +185,7 @@ int main(int argc, char** argv) {
 
         // Network: 5 -> 32 -> 16 -> 4
         network<sequential> net;
-        net << fully_connected_layer(5, 32) << relu()
+        net << fully_connected_layer(7, 32) << relu()
             << fully_connected_layer(32, 16) << relu()
             << fully_connected_layer(16, 4);
 
