@@ -1,16 +1,12 @@
-// Purpose:
-//  - Load ANNie/data/dataset.csv with columns: front,left,right,action
-//  - Train a small MLP (5 -> 16 -> 8 -> 4) using tiny-dnn
-//  - Save model weights as ANNie/models/arduino_weights.h (C arrays of floats)
-//  - Save a tiny-dnn binary model file ANNie/models/ann_model_tinydnn.bin (optional)
-// Notes:
-//  - The CSV must have a header line: front,left,right,action
-//  - action values: 0=FORWARD,1=LEFT,2=RIGHT,3=STOP
-//  - Normalization: distances clipped to [0,100] cm then scaled to [0..1]
-//  - tiny-dnn: Put tiny-dnn in vendor/tiny-dnn, include with -Ivendor/tiny-dnn
-// compile with 
+// training/train_ann.cpp
+// Minimal, robust trainer for ANNie (5 inputs: front,left,right,diff,minLR)
+// - Expects CSV: data/dataset.csv with header: front,left,right,diff,minLR,action
+// - Trains a 5->32->16->4 MLP using tiny-dnn
+// - Saves: models/ann_model_tinydnn.bin, models/predictions.csv, models/confusion.csv
+//
+// Compile (Developer Command Prompt):
 // cl /EHsc /std:c++17 training\train_ann.cpp /I vendor\tiny-dnn /Fe:training\train_ann.exe
-// run with 
+// Run:
 // training\train_ann.exe
 
 #include <iostream>
@@ -31,7 +27,6 @@
   #error "C++17 <filesystem> required"
 #endif
 
-// tiny-dnn include (adjust include path at compile with /I vendor\tiny-dnn)
 #include "tiny_dnn/tiny_dnn.h"
 
 using namespace tiny_dnn;
@@ -40,52 +35,105 @@ using std::string;
 using std::vector;
 
 struct Sample {
-    std::array<float,5> x;
-    int y; // 0..3
+    std::array<float,5> x; // front,left,right,diff,minLR  (normalized)
+    int y;                 // 0..3
 };
 
 static const float INPUT_RANGE_CM = 100.0f;
 
-// ---------- Load CSV ----------
+// Safe parse helpers
+static inline bool str_to_float(const string &s, float &out) {
+    try {
+        size_t idx = 0;
+        out = std::stof(s, &idx);
+        return idx == s.size();
+    } catch (...) { return false; }
+}
+static inline bool str_to_int(const string &s, int &out) {
+    try {
+        size_t idx = 0;
+        out = std::stoi(s, &idx);
+        return idx == s.size();
+    } catch (...) { return false; }
+}
+
+// Load CSV with robust diagnostics
 vector<Sample> load_dataset(const string &csv_path) {
     std::ifstream in(csv_path);
-    if (!in.is_open()) throw std::runtime_error("Failed to open dataset: " + csv_path);
+    if (!in.is_open()) {
+        std::cerr << "ERROR: Cannot open dataset file: " << csv_path << std::endl;
+        return {};
+    }
     vector<Sample> out;
     string line;
-    if (!std::getline(in, line)) throw std::runtime_error("Empty CSV or missing header");
+    // Read header
+    if (!std::getline(in, line)) {
+        std::cerr << "ERROR: Dataset appears empty: " << csv_path << std::endl;
+        return {};
+    }
+    std::cout << "CSV header: " << line << std::endl;
 
+    size_t lineno = 1;
+    size_t skipped = 0;
     while (std::getline(in, line)) {
-        if (line.size() < 3) continue;
+        ++lineno;
+        if (line.empty()) { ++skipped; continue; }
         std::stringstream ss(line);
-        string tok;
         vector<string> cols;
+        string tok;
         while (std::getline(ss, tok, ',')) cols.push_back(tok);
 
-        if (cols.size() < 6) continue; // need 5 features + label
+        if (cols.size() < 6) {
+            std::cerr << "Skipping line " << lineno << " (expected 6 cols, got " << cols.size() << "): " << line << std::endl;
+            ++skipped;
+            continue;
+        }
 
-        float f = std::stof(cols[0]);  // front
-        float l = std::stof(cols[2]);  // left
-        float r = std::stof(cols[3]);  // right
-        float d = std::stof(cols[4]);  // diff
-        float m = std::stof(cols[5]);  // minLR
-        int a   = std::stoi(cols[7]);
+        float f,l,r,d,m;
+        int a;
+        bool ok = true;
+        ok &= str_to_float(cols[0], f);
+        ok &= str_to_float(cols[1], l);
+        ok &= str_to_float(cols[2], r);
+        ok &= str_to_float(cols[3], d);
+        ok &= str_to_float(cols[4], m);
+        ok &= str_to_int(cols[5], a);
+
+        if (!ok) {
+            std::cerr << "Skipping line " << lineno << " (parse error): " << line << std::endl;
+            ++skipped;
+            continue;
+        }
+
+        // Normalize / clamp
+        float nf = std::clamp(f, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;          // 0..1
+        float nl = std::clamp(l, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;          // 0..1
+        float nr = std::clamp(r, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;          // 0..1
+        float nd = std::clamp(d, -INPUT_RANGE_CM, INPUT_RANGE_CM) / INPUT_RANGE_CM; // -1..1
+        float nm = std::clamp(m, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM;          // 0..1
 
         Sample s;
-        s.x = {
-            std::clamp(f, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
-            std::clamp(l, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
-            std::clamp(r, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
-            std::clamp(d, -INPUT_RANGE_CM, INPUT_RANGE_CM) / INPUT_RANGE_CM,
-            std::clamp(m, 0.0f, INPUT_RANGE_CM) / INPUT_RANGE_CM,
-        };
-        s.x = {f, l, r, d, m};
+        s.x = { nf, nl, nr, nd, nm };
         s.y = a;
         out.push_back(s);
+    }
+
+    std::cout << "Loaded " << out.size() << " valid samples, skipped " << skipped << " malformed/empty lines.\n";
+    if (out.size() > 0) {
+        std::cout << "Sample (first 5):\n";
+        for (size_t i = 0; i < std::min<size_t>(5, out.size()); ++i) {
+            auto &ss = out[i];
+            std::cout << i << ": [";
+            for (size_t j = 0; j < ss.x.size(); ++j) {
+                std::cout << std::fixed << std::setprecision(3) << ss.x[j] << (j+1<ss.x.size()? ", ":"");
+            }
+            std::cout << "] -> " << ss.y << "\n";
+        }
     }
     return out;
 }
 
-// ---------- Utils ----------
+// Shuffle & split
 void shuffle_split(const vector<Sample> &all, vector<Sample> &train, vector<Sample> &test, float test_ratio=0.2f, int seed=42) {
     vector<Sample> copy = all;
     std::mt19937 rng(seed);
@@ -96,134 +144,116 @@ void shuffle_split(const vector<Sample> &all, vector<Sample> &train, vector<Samp
     train.assign(copy.begin() + ntest, copy.end());
 }
 
+// Convert to tiny-dnn tensors
 void to_tiny(const vector<Sample> &data, std::vector<vec_t> &X, std::vector<label_t> &Y) {
-    X.clear(); 
-    Y.clear();
+    X.clear(); Y.clear();
+    X.reserve(data.size()); Y.reserve(data.size());
     for (const auto &s : data) {
         vec_t v;
-        for(auto f : s.x) v.push_back(f);
+        v.reserve(5);
+        for (float val : s.x) v.push_back(val);
         X.push_back(v);
         Y.push_back(static_cast<label_t>(s.y));
     }
 }
 
-// ---------- Export weights header (handles your tiny-dnn fork: weights() -> vector<vec_t*>) ----------
-void export_weights_header(network<sequential> &net, const std::string &out_path) {
-    std::ofstream fh(out_path);
-    if (!fh.is_open()) throw std::runtime_error("Cannot open weights header for writing");
-
-    fh << "// Auto-generated weights header from train_ann.cpp\n";
-    fh << "#ifndef ANN_WEIGHTS_H\n#define ANN_WEIGHTS_H\n\n";
-
-    // Iterate layers
-    for (size_t li = 0; li < net.depth(); ++li) {
-        auto layer_ptr = net[li];
-
-        // In your tiny-dnn build, weights() returns std::vector<vec_t*>
-        auto params = layer_ptr->weights();
-        if (params.empty()) continue;
-
-        for (size_t pidx = 0; pidx < params.size(); ++pidx) {
-            vec_t* vec_ptr = params[pidx];
-            if (!vec_ptr) continue;
-            const vec_t &vec = *vec_ptr;
-
-            std::ostringstream varname;
-            varname << "L" << li << "_P" << pidx;
-
-            fh << "// Layer " << li << " param " << pidx << " length=" << vec.size() << "\n";
-            fh << "const float " << varname.str() << "[] = { \n";
-
-            for (size_t k = 0; k < vec.size(); ++k) {
-                fh << std::fixed << std::setprecision(8) << vec[k] << "f";
-                if (k + 1 < vec.size()) fh << ", ";
-            }
-            fh << "\n};\n\n";
-        }
-    }
-
-    fh << "#endif // ANN_WEIGHTS_H\n";
-    fh.close();
-    std::cout << "Wrote weights header: " << out_path << std::endl;
-}
-
-// ---------- Main ----------
 int main(int argc, char** argv) {
     try {
-        // repo root is two levels up from training/
+        // Paths
         fs::path repoRoot = fs::path(__FILE__).parent_path().parent_path();
         fs::path dataPath = repoRoot / "data" / "dataset.csv";
         fs::path modelsDir = repoRoot / "models";
         fs::create_directories(modelsDir);
 
-        std::cout << "Loading dataset from: " << dataPath << std::endl;
+        std::cout << "Loading dataset from: " << dataPath.string() << std::endl;
         auto all = load_dataset(dataPath.string());
-        if (all.empty()) { std::cerr << "Dataset empty or not found\n"; return 1; }
-        std::cout << "Loaded " << all.size() << " samples\n";
+        if (all.empty()) {
+            std::cerr << "Dataset empty or not found. Make sure " << dataPath.string() << " exists and has header/front,left,right,diff,minLR,action\n";
+            return 1;
+        }
 
-        std::vector<Sample> train_samples, test_samples;
-        shuffle_split(all, train_samples, test_samples);
+        // Print class distribution
+        std::array<int,4> counts = {0,0,0,0};
+        for (auto &s : all) if (s.y >=0 && s.y < 4) counts[s.y]++;
+        std::cout << "Class counts: 0(FWD)=" << counts[0] << " 1(LEFT)=" << counts[1] << " 2(RIGHT)=" << counts[2] << " 3(STOP)=" << counts[3] << "\n";
 
+        // Split
+        vector<Sample> train_samples, test_samples;
+        shuffle_split(all, train_samples, test_samples, 0.2f, 1234);
+        std::cout << "Train: " << train_samples.size() << "  Test: " << test_samples.size() << std::endl;
+
+        // Convert to tiny-dnn
         std::vector<vec_t> X_train, X_test;
         std::vector<label_t> y_train, y_test;
         to_tiny(train_samples, X_train, y_train);
         to_tiny(test_samples, X_test, y_test);
 
-        // Network: 5 -> 32 -> 16 -> 4
+        // Build network: 5 -> 32 -> 16 -> 4
         network<sequential> net;
-        net << fully_connected_layer(7, 32) << relu()
+        net << fully_connected_layer(5, 64) << relu()
+            << fully_connected_layer(64, 32) << relu()
             << fully_connected_layer(32, 16) << relu()
             << fully_connected_layer(16, 4);
 
-        // Use Adam optimizer
+        // Optimizer
         adam optimizer;
-        optimizer.alpha = 1e-3f;
+        optimizer.alpha = float_t(1e-3);
 
-        const int epochs = 200;
-        const int batch_size = 64;
+        const int epochs = 300;
+        const int batch_size = 32;
 
         std::cout << "Starting training (epochs=" << epochs << ", batch=" << batch_size << ")...\n";
+        progress_display disp(static_cast<unsigned long>(X_train.size()));
+        timer t;
+        // tiny-dnn offers callbacks for progress_display; use simple train call
         net.train<cross_entropy_multiclass>(optimizer, X_train, y_train, batch_size, epochs);
         std::cout << "Training complete.\n";
 
-        // Evaluate and collect predictions
+        // Evaluate
         int correct = 0;
+        const int nClasses = 4;
+        std::vector<std::vector<int>> confusion(nClasses, std::vector<int>(nClasses,0));
         std::ofstream predout((modelsDir / "predictions.csv").string());
-        predout << "front,left,right,label,pred\n";
-        std::vector<std::vector<int>> conf(4, std::vector<int>(4,0));
+        predout << "f,l,r,diff,minLR,label,pred\n";
         for (size_t i = 0; i < X_test.size(); ++i) {
             vec_t res = net.predict(X_test[i]);
             int pred = static_cast<int>(std::distance(res.begin(), std::max_element(res.begin(), res.end())));
-            int lbl = static_cast<int>(y_test[i]);
-            if (pred == lbl) ++correct;
-            conf[lbl][pred] += 1;
-            predout << X_test[i][0] << "," << X_test[i][1] << "," << X_test[i][2] << "," << lbl << "," << pred << "\n";
+            int truth = static_cast<int>(y_test[i]);
+            if (pred == truth) ++correct;
+            if (truth >=0 && truth < nClasses) confusion[truth][pred]++;
+            // write original normalized floats (for inspection)
+            predout << std::fixed << std::setprecision(5)
+                    << X_test[i][0] << "," << X_test[i][1] << "," << X_test[i][2] << ","
+                    << X_test[i][3] << "," << X_test[i][4] << "," << truth << "," << pred << "\n";
         }
         predout.close();
 
         float acc = (X_test.empty() ? 0.0f : float(correct) / float(X_test.size()));
         std::cout << "Test accuracy: " << acc << " (" << correct << "/" << X_test.size() << ")\n";
 
-        // Save confusion matrix
+        // Save confusion
         std::ofstream cfout((modelsDir / "confusion.csv").string());
         cfout << "label/pred,0,1,2,3\n";
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < nClasses; ++i) {
             cfout << i;
-            for (int j = 0; j < 4; ++j) cfout << "," << conf[i][j];
+            for (int j = 0; j < nClasses; ++j) cfout << "," << confusion[i][j];
             cfout << "\n";
         }
         cfout.close();
-        std::cout << "Saved predictions.csv and confusion.csv in models/\n";
+        std::cout << "Saved predictions.csv and confusion.csv to " << modelsDir.string() << "\n";
 
-        // Save model and weights header
+        // Save model binary
         std::string modelBinPath = (modelsDir / "ann_model_tinydnn.bin").string();
         net.save(modelBinPath);
-        export_weights_header(net, (modelsDir / "arduino_weights.h").string());
+        std::cout << "Saved tiny-dnn model to: " << modelBinPath << "\n";
 
-        std::cout << "All done.\n";
+        std::cout << "Done.\n";
         return 0;
     } catch (const std::exception &ex) {
-        std::cerr << "Exception: " << ex.what() << std::endl;
+        std::cerr << "EXCEPTION: " << ex.what() << std::endl;
+        return 1;
+    } catch (...) {
+        std::cerr << "EXCEPTION: unknown\n";
         return 1;
     }
 }

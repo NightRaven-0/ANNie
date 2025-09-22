@@ -4,21 +4,21 @@
 #include <Arduino.h>
 
 // --- pins (same as earlier sketch) ---
-const uint8_t ENA = 5;
-const uint8_t ENB = 6;
-const uint8_t IN1 = 7;
-const uint8_t IN2 = 8;
-const uint8_t IN3 = 9;
-const uint8_t IN4 = 10;
-const uint8_t TRIG = 12;
-const uint8_t ECHO = 11;
-const uint8_t FRONT_LED = 2;
-const uint8_t BACK_LED = 4;
-const uint8_t SERVO_PIN = 3;
+const uint8_t ENA = 5;  //motor pins
+const uint8_t ENB = 6;  //motor pins
+const uint8_t IN1 = 7;  //motor pins
+const uint8_t IN2 = 8;  //motor pins
+const uint8_t IN3 = 9;  //motor pins
+const uint8_t IN4 = 10;  //motor pins
+const uint8_t TRIG = 12;  //ultrasonic sensor
+const uint8_t ECHO = 11;  //ultrasonic sensor
+const uint8_t FRONT_LED = 2;  //leds
+const uint8_t BACK_LED = 4;   //leds
+const uint8_t SERVO_PIN = 3;  //servo
 
-const int SAFE_DISTANCE = 25;
-const int CRITICAL_DISTANCE = 10;
-const int SERVO_CENTER = 90;
+const int SAFE_DISTANCE = 25;  //cm  
+const int CRITICAL_DISTANCE = 10;  //cm
+const int SERVO_CENTER = 90;  
 const int SERVO_LEFT = 150;
 const int SERVO_RIGHT = 30;
 
