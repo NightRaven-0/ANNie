@@ -5,59 +5,15 @@ Instead of relying only on fixed rules, ANNie uses a trained multilayer perceptr
 
 ---
 
-## 📂 Repository Structure
-
-ANNie/
-├── data/
-│   ├── dataset.csv
-│   └── normalize_params.json
-├── docs/
-│   ├── error-handling.png
-│   ├── hardware-wiring.png
-|   ├── sys-architecture.txt
-│   ├── sysflow.txt
-|   ├── system_architecture.png
-|   └── system_flow.png
-├── firmware/
-│   └── robot_ann.ino
-├── models/
-|   ├──ann_model_tinyann.bin
-│   ├── ann_model.h5
-│   ├── ann_model.tflite
-│   ├── arduino_weights.h
-|   ├── confusion.csv
-|   └── predictions.csv
-├── training/
-|   ├── adapt-annie.py
-|   ├── dataset_download.py
-|   ├── gen_data.exe
-|   ├── generate_synthetic.cpp
-|   ├── simulate_ann.cpp
-|   ├── simulate_ann.exe
-|   ├── simulate_ann.exp
-|   ├── simulate_ann.lib
-|   ├── train_ann.cpp
-|   ├── train_ann.exe
-|   ├── train_ann.lib
-├── vendor/
-├── .gitignore
-├── generate_synthetic.obj
-├── README.md
-├── simulate_ann.obj
-├── train_ann.obj
-
-
----
-
 ## 🛠️ Hardware
 
 - **Arduino Uno** (controller)  
 - **L298N motor driver** (H-Bridge for 2 DC motors)  
-- **2× DC motors with wheels**  
+- **4× DC motors with wheels**  
 - **HC-SR04 ultrasonic sensor** (mounted on servo)  
 - **SG90 micro servo** (rotates sensor left/center/right)  
 - **LED indicators** (front/back states)  
-- **Metal chassis with battery pack**
+- **chassis with battery pack**
 
 ---
 
@@ -67,7 +23,7 @@ ANNie/
 
 - **Inputs (5 floats):**  
   `front`, `left`, `right`, `diff (left - right)`, `minLR (min(left,right))`  
-- **Hidden Layer:** 8 neurons, ReLU activation  
+- **Hidden Layer:** 64 neurons, ReLU activation  
 - **Output Layer:** 4 logits → `FORWARD, LEFT, RIGHT, STOP`  
 - **Decision:** argmax selects action, validated with safety checks
 
@@ -97,12 +53,10 @@ front,left,right,diff,minLR,action
 ## 🎓 Training & Simulation
 
 1. Generate Dataset
-``` sh
 cl /EHsc /std:c++17 training\generate_synthetic.cpp /Fe:training\gen_data.exe
 training\gen_data.exe
 
 2. Train Ann
-```sh
 cl /EHsc /std:c++17 training\train_ann.cpp /I vendor\tiny-dnn /Fe:training\train_ann.exe
 training\train_ann.exe
 
@@ -127,7 +81,7 @@ System architecture and flow diagrams are under docs/
 
 Add photos of robot build (hardware_wiring.png)
 
-Upload demo GIFs/videos showing ANNie avoiding obstacles
+Videos showing ANNie avoiding obstacles
 
 🚨 Error & Safety Handling
 
@@ -145,7 +99,7 @@ If still blocked → stall mode (stop + heartbeat LED + require human reset)
 
 Synthetic dataset accuracy: ~26% (toy example)
 
-Real-world dataset accuracy: ~22–25% baseline
+Real-world dataset accuracy: ~64%
 
 With larger datasets and tuning (epochs, hidden neurons), performance should improve.
 
